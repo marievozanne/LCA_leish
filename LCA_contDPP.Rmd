@@ -1,0 +1,672 @@
+---
+title: "Latent Class Models for CVL"
+subtitle: "Continuous DPP, Dichotomous Assay PCR"
+author: "Marie Ozanne"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(coda)
+library(data.table)
+library(reshape2)
+library(dplyr)
+library(egg)
+library(ggplot2)
+library(ggforce)
+library(R2OpenBUGS)
+library(xtable)
+```
+
+## Data Summary and Transformations
+
+```{r fig.align='center'}
+## Read in data
+ss_data2 <- read.csv(file="G:/My Drive/Research/Sensitivity_Specificity/Data/clean_ss_data2.csv",
+                     header = TRUE)
+
+## Add subject index to data frame (for nested random effects)
+ss_data2$subject <- group_indices(ss_data2, ID)
+
+## Plot DPP
+head(ss_data2)
+
+h1 <- ggplot(data=ss_data2, aes(x=DPP, fill=PCR_positive)) + 
+  geom_histogram(bins=50) +
+  geom_vline(xintercept=10, linetype="dashed") + 
+  theme_bw() + 
+  xlab("DPP Reader")
+h1
+
+### Add epsilon to only DPP of 0 (147)
+ss_data2$DPP[147] <- ss_data2$DPP[147] + 0.01
+
+## sqrt transformation for DPP
+h2 <- ggplot(data=ss_data2, aes(x=sqrt(DPP), fill=PCR_positive)) + 
+  geom_histogram(bins=50) +
+  geom_vline(xintercept=sqrt(10), linetype="dashed") + 
+  theme_bw() + 
+  xlab("DPP Reader")
+h2
+
+## log transformation for DPP
+h3 <- ggplot(data=ss_data2, aes(x=log(DPP), fill=PCR_positive)) + 
+  geom_histogram(bins=50) +
+  geom_vline(xintercept=log(10), linetype="dashed") + 
+  theme_bw() + 
+  xlab("DPP Reader")
+h3
+
+## Summarize data
+ss_data2 %>% 
+  group_by(DPP_positive2, PCR_positive) %>%
+  summarise(Count=n(),
+            pct_Male=mean(Sex=="M"),
+            median_age=median(Age),
+            quantile.025_age=quantile(Age, c(0.025)),
+            quantile.975_age=quantile(Age, c(0.975)),
+            median_DPP=median(DPP),
+            quantile.025_DPP=quantile(DPP, c(0.025)),
+            quantile.975_DPP=quantile(DPP, c(0.975)))
+```
+
+## Model
+
+
+
+## MCMC via OpenBUGS (no transformation)
+
+```{r Open Bugs Model ContDPP setup}
+## ranges of sensitivities and specificities
+sens.pcr.range <- c(0.839, 0.990)
+sens.dpp.range <- c(0.832, 0.930)
+spec.pcr.range <- c(0.871, 0.970)
+spec.dpp.range <- c(0.682, 0.951)
+
+## ranges of sensitivities and specificities
+sens.pcr <- mean(sens.pcr.range) #0.999
+sens.dpp <- mean(sens.dpp.range) #0.001
+spec.pcr <- mean(spec.pcr.range) #0.999
+spec.dpp <- mean(spec.dpp.range) #0.001
+
+## range of prevalence for visceral leishmaniasis
+prev.range <- c(0.05,0.10)
+prev <- mean(prev.range)
+```
+
+```{r}
+## Prior information - mixture of Gammas
+m1 <- 150.3 #mean DPP for symptomatic Leish (from dogs with 3+ clinical signs)
+v1 <- 103.7^2 #DPP variance for symptomatic Leish (from dogs with 3+ clinical signs)
+h_a1 <- m1^2/v1 #shape parameter for prior DPP score for Y|D=1
+h_b1 <- m1/v1 #rate parameter for prior DPP score for Y|D=1
+
+m0 <- 2 #mean DPP for negative Leish (less sure about these)
+v0 <- 1 #DPP variance for negative Leish 
+h_a0 <- m0^2/v0
+h_b0 <- m0/v0
+
+
+```
+
+## MCMC via OpenBUGS (with no transformation)
+
+
+
+## Results (no transformation)
+
+```{r}
+## Read in saved data
+# load("G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/model2_posterior.Rdata")
+```
+
+## MCMC via OpenBUGS (with Sqrt transformation)
+
+### Set hyperpriors on mixture of Gammas
+
+```{r gamma hyperprior specification sqrt trans}
+## Prior information - mixture of Gammas (with sqrt transformation)
+m1 <- mean(sqrt(ss_data2[ss_data2$ClinicalStatus=="S",]$DPP)) #mean DPP for symptomatic Leish (from dogs with 3+ clinical signs)
+v1 <- var(sqrt(ss_data2[ss_data2$ClinicalStatus=="S",]$DPP)) #DPP variance for symptomatic Leish (from dogs with 3+ clinical signs)
+h_a1 <- m1^2/v1 #shape parameter for prior DPP score for Y|D=1
+h_b1 <- m1/v1 #rate parameter for prior DPP score for Y|D=1
+
+m0 <- mean(sqrt(ss_data2[ss_data2$ClinicalStatus=="N",]$DPP)) #mean DPP for negative Leish (less sure about these)
+v0 <- var(sqrt(ss_data2[ss_data2$ClinicalStatus=="N",]$DPP)) #DPP variance for negative Leish 
+h_a0 <- m0^2/v0
+h_b0 <- m0/v0
+```
+
+### Run through OpenBUGS
+
+```{r Open Bugs Model ContDPP sqrt trans, include=FALSE, message=FALSE}
+## Specify data
+y.pcr <- 1*(ss_data2$PCR_positive=="Positive")
+y.dpp_c <- sqrt(ss_data2$DPP)
+  
+nind <- nrow(ss_data2)
+  
+Sex2 <- 1*(ss_data2$Sex=="M")
+Age <- as.numeric(ss_data2$Age)
+Ind_Age <- 1*(Age >= 6)
+S.a <- sens.pcr/(1-sens.pcr)
+Sp.a <- spec.pcr/(1-spec.pcr)
+  
+data <- list(nind=nind,
+               y.pcr=y.pcr,
+               y.dpp_c=y.dpp_c,
+               Sex=Sex2,
+               Age=Age,
+               # Ind_Age=Ind_Age,
+               h_a0=1/h_a0, # to get the mean to be h_a0
+               h_a1=1/h_a1,
+               h_b0=1/h_b0,
+               h_b1=1/h_b1,
+               S.a=S.a, ## function of mean sensitivity for PCR
+               Sp.a=Sp.a ## function of mean specificity for PCR
+             )
+
+## Initialize prior values
+inits <- function(){
+    list(B0=rnorm(0,1),
+         B1=rnorm(0,1),
+         B2=rnorm(0,1),
+         B3=rnorm(0,1),
+         a0=rexp(4),
+         b0=rexp(1),
+         eps=rnorm(nind,0,5000)
+         )
+}
+
+## MCMC Simulation
+sens_spec.sim_contDPP_sqrt <- bugs(data=data, 
+                              inits=inits, 
+                              model.file="Model_cDPP_mixGamma.txt", ##Variables missing from the model
+                              parameters=c("B0",
+                                           "B1",
+                                           "B2",
+                                           "B3",
+                                           "S.pcr",
+                                           "Sp.pcr",
+                                           "a1",
+                                           "b1",
+                                           "a0",
+                                           "b0",
+                                           "pi.D",
+                                           "D" 
+                                           # "eps"
+                                           ),
+                              n.chains=3, n.iter=30000, n.burnin=10000, 
+                              codaPkg=TRUE, debug=TRUE)
+
+## Use coda to read things back into R
+codaobject_contDPP_sqrt <- read.bugs(sens_spec.sim_contDPP_sqrt)
+model1_contDPP_sqrt <- do.call(rbind.data.frame, codaobject_contDPP_sqrt)
+
+save(model1_contDPP_sqrt, file="G:/My Drive/Research/Sensitivity_Specificity/Models/Model Fits/model2_posterior_sqrt.Rdata")
+
+```
+
+### Checking convergence
+
+- Check trace plots
+- Check Gelman-Rubin statistic (all are close to 1 for basis parameters)
+
+```{r}
+model1_contDPP_sqrt$itr <- rep(1:20000, times=3)
+model1_contDPP_sqrt$chain <- rep(1:3, each=20000)
+
+par(mfrow=c(2,2))
+## Graphial summaries of posterior distributions
+hist(exp(model1_contDPP_sqrt$B0)/(1+exp(model1_contDPP_sqrt$B0)), main="prevalence", xlab="posterior draws")
+abline(v=mean(exp(model1_contDPP_sqrt$B0)/(1+exp(model1_contDPP_sqrt$B0))), lty="dashed", col="red")
+
+hist(model1_contDPP_sqrt$B0, main="prevalence", xlab="posterior draws")
+abline(v=mean(model1_contDPP_sqrt$B0), lty="dashed", col="red")
+
+hist(model1_contDPP_sqrt$B1, main="Sex", xlab="posterior draws")
+abline(v=mean(model1_contDPP_sqrt$B1), lty="dashed", col="red")
+# hist(model1_contDPP_sqrt$B2, main="Age", xlab="posterior draws")
+# abline(v=mean(model1_contDPP_sqrt$B2), lty="dashed", col="red")
+# hist(model1_contDPP_sqrt$B3, main="Age/Sex Interaction", xlab="posterior draws")
+# abline(v=mean(model1_contDPP_sqrt$B3), lty="dashed", col="red")
+
+## Trace plots for logistic regression parameters
+p0 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=B0, col=as.factor(chain))) +
+             geom_line()
+p1 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=B1, col=as.factor(chain))) +
+             geom_line()
+p2 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=B2, col=as.factor(chain))) +
+             geom_line()
+p3 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=B3, col=as.factor(chain))) +
+             geom_line()
+
+ggarrange(p0,p1,p2,p3, ncol=2)
+
+## Calculate Gelman-Rubin diagnostic statistic
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$B0),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$B0),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$B0)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$B1),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$B1),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$B1)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$B2),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$B2),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$B2)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$B3),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$B3),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$B3)))
+
+## Trace plots for mixture of gamma parameters and sensitivity/specificity for PCR
+p4 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=a1, col=as.factor(chain))) +
+             geom_line()
+p5 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=b1, col=as.factor(chain))) +
+             geom_line()
+p6 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=a0, col=as.factor(chain))) +
+           geom_line()
+p7 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=b0, col=as.factor(chain))) +
+             geom_line()
+p8 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=S.pcr, col=as.factor(chain))) +
+             geom_line()
+p9 <- ggplot(data=model1_contDPP_sqrt, aes(x=itr, y=Sp.pcr, col=as.factor(chain))) +
+             geom_line()
+
+ggarrange(p4, p5, p6, p7, p8, p9, ncol=2)
+
+## Calculate Gelman-Rubin diagnostic statistic
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$a1),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$a1),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$a1)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$b1),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$b1),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$b1)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$a0),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$a0),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$a0)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$b0),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$b0),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$b0)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$S.pcr),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$S.pcr),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$S.pcr)))
+gelman.diag(mcmc.list(mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==1,]$Sp.pcr),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==2,]$Sp.pcr),
+                      mcmc(model1_contDPP_sqrt[model1_contDPP_sqrt$chain==3,]$Sp.pcr)))
+```
+
+### Results summary - regression coefficients (sqrt transformation)
+
+```{r posterior table sqrt transformation, echo=FALSE}
+## load(file="G:/My Drive/Research/Sensitivity_Specificity/Models/Model Fits/model2_posterior_sqrt.Rdata")
+
+tmp2 <- model1_contDPP_sqrt[,names(model1_contDPP_sqrt) %in% c("B0","B1","B2","B3","S.pcr","Sp.pcr","a1","b1","a0","b0")]
+
+Pg0_fcn <- function(x){
+  mean(x > 0)
+}
+
+tmp2_summary <- data.frame(parameter=names(tmp2),
+                           mean=apply(tmp2, 2, mean),
+                           median=apply(tmp2, 2, median),
+                           LB=apply(tmp2, 2, quantile, 0.025),
+                           UB=apply(tmp2, 2, quantile, 0.975),
+                           Pg0=apply(tmp2, 2, Pg0_fcn))
+xtable(tmp2_summary)
+```
+
+### Results summary - disease state classification population (sqrt transformation)
+
+```{r}
+invlogit <- function(B0, B1, B2, B3, Sex, Age){ #Sex=1 if male
+  # exp(B0+B1*Sex+B2*Age)/(1+exp(B0+B1*Sex+B2*Age))
+  exp(B0+B1*Sex+B2*Age+B3*Sex*Age)/(1+exp(B0+B1*Sex+B2*Age+B3*Sex*Age))
+}
+
+## logistic curves: Model cont DPP - sqrt transformation
+post_df_M2 <- data.frame(Age=rep(1:14,2),
+                         Sex=c(rep("M",14),rep("F",14)))
+post_df_M2$mean_prob <- invlogit(B0=tmp2_summary$mean[1], 
+                                 B1=tmp2_summary$mean[2],
+                                 B2=tmp2_summary$mean[3],
+                                 B3=tmp2_summary$mean[4],
+                                 Sex=1*(post_df_M2$Sex=="M"),
+                                 Age=post_df_M2$Age) 
+post_df_M2$LB_prob <- invlogit(B0=tmp2_summary$LB[1], 
+                                 B1=tmp2_summary$LB[2],
+                                 B2=tmp2_summary$LB[3],
+                                 B3=tmp2_summary$LB[4],
+                                 Sex=1*(post_df_M2$Sex=="M"),
+                                 Age=post_df_M2$Age) 
+post_df_M2$UB_prob <- invlogit(B0=tmp2_summary$UB[1], 
+                                 B1=tmp2_summary$UB[2],
+                                 B2=tmp2_summary$UB[3],
+                                 B3=tmp2_summary$UB[4],
+                                 Sex=1*(post_df_M2$Sex=="M"),
+                                 Age=post_df_M2$Age)
+
+l1_prob <- ggplot(post_df_M2, aes(x=Age, y=mean_prob, color=Sex)) + 
+  geom_point() + 
+  geom_line() + 
+  geom_ribbon(aes(ymin=LB_prob, ymax=UB_prob, color=Sex, fill=Sex), alpha=0.2) +
+  theme_bw() + 
+  theme(legend.position = "none") +
+  labs(fill = "Sex") +
+  ylab("P(D=1|X)") + 
+  facet_zoom(xlim=c(1,4))
+l1_prob
+# ggsave(l1_prob, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_1_invlogit.eps")
+# ggsave(l1_prob, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_1_invlogit.pdf")
+# ggsave(l1_prob, file="G:/My Drive/JSM/JSM 2020/Model_1_invlogit.pdf")
+
+```
+
+# Results summary -- individual classification (all DPP transformations)
+
+```{r classification figures model results, echo=FALSE}
+fig_df <- data.frame(mean_piD_M1=apply(model1_contDPP[,grep("pi.D",
+                                                       names(model1_contDPP))],
+                                       2, median),
+                     mean_piD_M2=apply(model1_contDPP_sqrt[,grep("pi.D",
+                                                            names(model1_contDPP_sqrt))],
+                                       2, median),
+                     sd_piD_M1=apply(model1_contDPP[,grep("pi.D",
+                                                     names(model1_contDPP))],
+                                     2, sd),
+                     sd_piD_M2=apply(model1_contDPP_sqrt[,grep("pi.D",
+                                                          names(model1_contDPP_sqrt))],
+                                     2, sd),
+                     lb_piD_M1=apply(model1_contDPP[,grep("pi.D",
+                                                     names(model1_contDPP))],
+                                     2, quantile, probs=0.1),
+                     lb_piD_M2=apply(model1_contDPP_sqrt[,grep("pi.D",
+                                                          names(model1_contDPP_sqrt))],
+                                     2, quantile, probs=0.1),
+                     ub_piD_M1=apply(model1_contDPP[,grep("pi.D",
+                                                     names(model1_contDPP))],
+                                     2, quantile, probs=0.9),
+                     ub_piD_M2=apply(model1_contDPP_sqrt[,grep("pi.D",
+                                                          names(model1_contDPP_sqrt))],
+                                     2, quantile, probs=0.9),
+                     DPP=ss_data2$DPP,
+                     Age=ss_data2$Age,
+                     Sex=ss_data2$Sex,
+                     PCR=ss_data2$PCR_positive,
+                     ClinicalStatus=ss_data2$ClinicalStatus,
+                     ID=ss_data2$ID)
+
+p1 <- ggplot(data=fig_df) + 
+  geom_point(aes(x=DPP, y=mean_piD_M1, color=as.factor(PCR), pch=ClinicalStatus)) +
+  theme_bw() + 
+  theme(legend.position = "none") +
+  ylab("P(D=1|X)") +
+  xlab("DPP Reader Score") +
+  labs(color="PCR Status") +
+  geom_vline(xintercept = 10, lty="dashed", color="gray") +
+  geom_hline(yintercept = 0.5, lty="dashed", color="gray") +
+  geom_errorbar(aes(ymin=lb_piD_M1, ymax=ub_piD_M1,
+                    x=DPP, y=mean_piD_M1), width=.2) + 
+  # ylim(0,1) +
+  facet_zoom(xlim=c(0,10))
+
+p2 <- ggplot(data=fig_df, ) + 
+  geom_point(aes(x=DPP, y=mean_piD_M2, color=as.factor(PCR), pch=ClinicalStatus)) +
+  theme_bw() +
+  theme(axis.text.y = element_blank()) +
+  labs(pch="Clinical Status") +
+  # ylab("P(D=1|X)") +
+  ylab("") +
+  xlab("DPP Reader Score") +
+  labs(color="PCR Status") +
+  geom_vline(xintercept = 10, lty="dashed", color="gray") +
+  geom_hline(yintercept = 0.5, lty="dashed", color="gray") +
+  geom_errorbar(aes(ymin=lb_piD_M2, ymax=ub_piD_M2,
+                   x=DPP, y=mean_piD_M2), width=.2) +
+  # ylim(0,1) +
+  facet_zoom(xlim=c(0,10))
+p1
+# ggsave(p1, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_1_ind_D.eps")
+# ggsave(p1, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_1_ind_D.tiff")
+# ggsave(p1, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_1_ind_D.pdf")
+p2
+# ggsave(p2, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_2_ind_D.eps")
+# ggsave(p2, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_2_ind_D.tiff")
+# ggsave(p2, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/Model_2_ind_D.pdf")
+# ggarrange(p1, p2, nrow=1)
+ggarrange(p1, p2, nrow=1)
+# ggsave(p3, file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/M1_M2_ind_D.eps")
+# ggsave(ggarrange(p1, p2, nrow=1), file="G:/My Drive/Research/Sensitivity_Specificity/Paper Draft/M1_M2_ind_D.pdf")
+
+## Look at the individuals that have posterior intervals wider than 0.7
+summary(fig_df[fig_df$ub_piD_M2-fig_df$lb_piD_M2 > 0.7,names(fig_df) %in% c("ID", "DPP", "Age", "Sex", "PCR", "ClinicalStatus")])
+summary(fig_df[fig_df$ub_piD_M2-fig_df$lb_piD_M2 <= 0.7,names(fig_df) %in% c("ID", "DPP", "Age", "Sex", "PCR", "ClinicalStatus")])
+```
+
+
+## MCMC via OpenBUGS (constraint on ordering of Gamma distributions)
+
+```{r}
+## Specify data
+y.pcr <- 1*(ss_data2$PCR_positive=="Positive")
+y.dpp_c <- sqrt(ss_data2$DPP)
+  
+nind <- nrow(ss_data2)
+  
+Sex2 <- 1*(ss_data2$Sex=="M")
+Age <- as.numeric(ss_data2$Age)
+S.a <- sens.pcr/(1-sens.pcr)
+Sp.a <- spec.pcr/(1-spec.pcr)
+  
+data <- list(nind=nind,
+               y.pcr=y.pcr,
+               y.dpp_c=y.dpp_c,
+               Sex=Sex2,
+               Age=Age,
+               # b1=0.01,
+               # b0=1.82,
+               S.a=S.a, ## function of mean sensitivity for PCR
+               Sp.a=Sp.a ## function of mean specificity for PCR
+             )
+
+## Initialize prior values
+inits <- function(){
+    list(B0=rnorm(0,1),
+         B1=rnorm(0,1),
+         B2=rnorm(0,1),
+         B3=rnorm(0,1),
+         a0=rgamma(0.01, 0.01), #3.70,
+         b0=rgamma(0.01, 0.01), #1.82, 
+         a1=rgamma(0.01, 0.01), #0.52, 
+         b1=rgamma(0.01, 0.01), #0.01,
+         eps=rnorm(nind,0,5000)
+         )
+}
+
+## MCMC Simulation
+sens_spec.sim_contDPP_oc <- bugs(data=data, 
+                              inits=inits, 
+                              model.file="Model_cDPP_mixGamma_orderingconstraint.txt", 
+                              parameters=c("B0",
+                                           "B1",
+                                           "B2",
+                                           "B3",
+                                           "S.pcr",
+                                           "Sp.pcr",
+                                           "a1",
+                                           "b1",
+                                           "a0",
+                                           "b0",
+                                           "pi.D",
+                                           "eps"
+                                           ),
+                              n.chains=3, n.iter=30000, n.burnin=10000, 
+                              codaPkg=TRUE, debug=TRUE)
+
+## Use coda to read things back into R
+codaobject_contDPP_oc <- read.bugs(sens_spec.sim_contDPP_oc)
+model1_contDPP_oc <- do.call(rbind.data.frame, codaobject_contDPP_oc)
+
+save(model1_contDPP_oc, file="G:/My Drive/Research/Sensitivity_Specificity/Models/Model Fits/model2_posterior_oc.Rdata")
+```
+
+
+## MCMC via OpenBUGS (log transformation)
+
+### Set hyperpriors on mixture of Gaussians
+
+```{r Gaussian hyperprior specification log trans}
+## Prior information - mixture of Gaussians (with log transformation)
+m1 <- mean(log(ss_data2[ss_data2$ClinicalStatus=="S",]$DPP)) #mean DPP for symptomatic Leish (from dogs with 3+ clinical signs)
+v1 <- var(log(ss_data2[ss_data2$ClinicalStatus=="S",]$DPP)) #DPP variance for symptomatic Leish (from dogs with 3+ clinical signs)
+
+m0 <- mean(log(ss_data2[ss_data2$ClinicalStatus=="N",]$DPP)) #mean DPP for negative Leish (less sure about these)
+v0 <- var(log(ss_data2[ss_data2$ClinicalStatus=="N",]$DPP)) #DPP variance for negative Leish
+
+h_mu1 <- m1
+h_mu0 <- m0
+h_p1 <- 1/v1 ##OpenBUGS parameterized in terms of precision
+h_p0 <- 1/v0
+```
+
+### Run through OpenBUGS
+
+```{r Open Bugs Model ContDPP log trans, include=FALSE, message=FALSE}
+## Specify data
+y.pcr <- 1*(ss_data2$PCR_positive=="Positive")
+y.dpp_c <- log(ss_data2$DPP)
+  
+nind <- nrow(ss_data2)
+  
+Sex2 <- 1*(ss_data2$Sex=="M")
+Age <- as.numeric(ss_data2$Age)
+Ind_Age <- 1*(Age >= 6)
+S.a <- sens.pcr/(1-sens.pcr)
+Sp.a <- spec.pcr/(1-spec.pcr)
+  
+data <- list(nind=nind,
+               y.pcr=y.pcr,
+               y.dpp_c=y.dpp_c,
+               Sex=Sex2,
+               Age=Age,
+               h_mu0=h_mu0,
+               h_mu1=h_mu1,
+               h_p0=h_p0,
+               h_p1=h_p1,
+               S.a=S.a, ## function of mean sensitivity for PCR
+               Sp.a=Sp.a ## function of mean specificity for PCR
+             )
+
+## Initialize prior values
+inits <- function(){
+    list(B0=rnorm(0,1),
+         B1=rnorm(0,1),
+         B2=rnorm(0,1),
+         B3=rnorm(0,1),
+         eps=rnorm(nind,0,5000)
+         )
+}
+
+## MCMC Simulation
+sens_spec.sim_contDPP_log <- bugs(data=data, 
+                              inits=inits, 
+                              model.file="Model_cDPP_mixGaussian.txt", 
+                              parameters=c("B0",
+                                           "B1",
+                                           "B2",
+                                           "B3",
+                                           "S.pcr",
+                                           "Sp.pcr",
+                                           "mu1",
+                                           "p1",
+                                           "mu0",
+                                           "p0",
+                                           "pi.D",
+                                           "D" 
+                                           # "eps"
+                                           ),
+                              n.chains=3, n.iter=30000, n.burnin=10000, 
+                              codaPkg=TRUE, debug=TRUE)
+
+## Use coda to read things back into R
+codaobject_contDPP_log <- read.bugs(sens_spec.sim_contDPP_log)
+model1_contDPP_log <- do.call(rbind.data.frame, codaobject_contDPP_log)
+
+save(model1_contDPP_log, file="G:/My Drive/Research/Sensitivity_Specificity/Models/Model Fits/model2_posterior_log.Rdata")
+
+```
+
+### Results summary (log transformation)
+
+
+
+### Table summary
+
+```{r}
+tmp2 <- model1_contDPP[,names(model1_contDPP) %in% c("B0","B1","B2","B3","S.pcr","Sp.pcr","a1","b1","a0","b0")]
+
+Pg0_fcn <- function(x){
+  mean(x > 0)
+}
+
+tmp2_summary <- data.frame(parameter=names(tmp2),
+                           mean=apply(tmp2, 2, mean),
+                           median=apply(tmp2, 2, median),
+                           LB=apply(tmp2, 2, quantile, 0.025),
+                           UB=apply(tmp2, 2, quantile, 0.975),
+                           Pg0=apply(tmp2, 2, Pg0_fcn))
+xtable(tmp2_summary)
+```
+
+
+### Side-by-side boxplot of posterior distributions of parameter values
+
+```{r}
+## Collect only population parameters for display in boxplot
+tmp <- model1_contDPP[,names(model1_contDPP) %in% c("B0", "B1", "B2", "B3",
+                                                    "S.pcr", "Sp.pcr",
+                                                    "a1", "b1", "a0", "b0")]
+tmp$ID <- 1:nrow(tmp)
+
+tmp_long <- data.frame(variable=rep(c("B0", "B1", "B2", "B3",
+                                                    "S.pcr", "Sp.pcr",
+                                                    "a1", "b1", "a0", "b0"), 
+                                    each=nrow(tmp)),
+                       value=c(model1_contDPP$B0,
+                                   model1_contDPP$B1,
+                                   model1_contDPP$B2,
+                                   model1_contDPP$B3,
+                                   model1_contDPP$S.pcr,
+                                   model1_contDPP$Sp.pcr,
+                                   model1_contDPP$a1,
+                                   model1_contDPP$b1,
+                                   model1_contDPP$a0,
+                                   model1_contDPP$b0))
+
+bp1 <- ggplot(data=tmp_long[tmp_long$variable %in% c("B0","B1","B2","B3"),],
+              aes(y=value, x=variable)) + 
+  geom_boxplot() +
+  ylab("Posterior effect estimate") +
+  xlab("") + 
+  theme_bw()
+bp1
+
+bp2 <- ggplot(data=tmp_long[tmp_long$variable %in% c("a1", "b1", "a0", "b0"),],
+              aes(y=value, x=variable)) + 
+  geom_boxplot() + 
+  ylab("Posterior hyperparameter estimates") + 
+  xlab("Gamma distribution parameters") + 
+  theme_bw()
+bp2
+
+bp_3 <- ggplot(data=tmp_long[tmp_long$variable %in% c("S.pcr", "Sp.pcr"),],
+               aes(y=value, x=variable)) + 
+  geom_boxplot() + 
+  ylab("Posterior estimates") + 
+  xlab("PCR Sensitivity and Specificity") + 
+  theme_bw()
+bp_3
+```
+
+## Results (with Sqrt transformation)
+
+## References
