@@ -1,0 +1,35 @@
+model
+{
+
+# Likelihood
+for (i in 1:N){
+    ## Data Model - separate tests
+    y.pcr[i] ~ dbern(pi.pcr[i])
+    pi.pcr[i] <- D[i]*S.pcr + (1-D[i])*(1-Sp.pcr)
+
+    y.dpp[i] ~ dbern(pi.dpp[i])    
+    pi.dpp[i] <- D[i]*S.dpp + (1-D[i])*(1-Sp.dpp)
+
+    ## Process Model
+    pi.D[i] <- exp(B0+B1*Sex[i]+B2*Age[i]+B3*Age[i]*Senior[i]+eps[i])/(1+exp(B0+B1*Sex[i]+B2*Age[i]+B3*Age[i]*Senior[i]+eps[i]))
+    D[i] ~ dbern(pi.D[i])
+
+    eps[i] ~ dnorm(0,5.0E-03)
+    }
+
+# Priors
+## PCR test priors
+S.pcr ~ dbeta(S.a, 1)
+Sp.pcr ~ dbeta(Sp.a, 1)
+
+S.dpp ~ dbeta(S.a_dpp, 1)
+Sp.dpp ~ dbeta(Sp.a_dpp, 1)
+
+## Prevalence
+B0 ~ dnorm(-2,1)
+
+## Regression coefficients
+B1 ~ dnorm(0,1)
+B2 ~ dnorm(0,1)
+B3 ~ dnorm(0,1)
+}
