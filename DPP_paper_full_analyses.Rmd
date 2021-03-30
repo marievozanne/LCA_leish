@@ -1,0 +1,238 @@
+---
+title: "DPP Reader Paper Analyses"
+author: "Marie Ozanne"
+date: "3/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(coda)
+library(data.table)
+library(reshape2)
+library(dplyr)
+library(egg)
+library(ggplot2)
+library(ggforce)
+library(R2OpenBUGS)
+library(xtable)
+```
+
+# Preliminary work
+
+```{r echo=FALSE}
+dpp_all <- read.csv("G:/My Drive/Research/Sensitivity_Specificity/Data/DPPReaderData_cleaned.csv")
+head(dpp_all)
+summary(dpp_all)
+
+names(dpp_all)[1:9] <- c(names(dpp_all)[1:4], "PCR_avg_CT", "PCR", "DPP_reader", "DPP", "Clinical_status")
+
+dpp_all <- dpp_all %>% select(ID, Sex, Age, PCR, DPP_reader, DPP, Clinical_status)
+summary(dpp_all)
+dpp_all[which(is.na(dpp_all$DPP_reader)),]
+
+## One dog with missing DPP and DPP reader (ID: Penelope)
+## Will omit 1 observation
+dpp_usable <- na.omit(dpp_all) ## left with 1384 observations
+
+str(dpp_usable)
+```
+
+## Identifying other missing values
+
+```{r}
+## Investigating other missing values for demographic variables ("")
+### Sex
+unique(dpp_usable$Sex)
+# dpp_usable[which(dpp_usable$Sex==""),]
+
+# dpp_usable[which(dpp_usable$ID %in% dpp_usable[which(dpp_usable$Sex==""),]$ID),]
+
+## Add sex for Gumbo:
+dpp_usable[dpp_usable$ID=="Gumbo",]$Sex <- "F"
+
+## Print others for which sex is missing
+# dpp_usable[which(dpp_usable$ID %in% dpp_usable[which(dpp_usable$Sex==""),]$ID),]
+
+### Age
+unique(dpp_usable$Age)
+# dpp_usable[which(dpp_usable$Age==""|dpp_usable$Age=="."),]
+
+## Look at PCR and DPP
+unique(dpp_usable$PCR) ## What should I do with BL?
+dpp_usable$PCR <- tolower(dpp_usable$PCR)
+unique(dpp_usable$DPP)
+dpp_usable$DPP <- tolower(dpp_usable$DPP)
+
+## Print all dogs for which sex or age is missing
+dpp_usable[which(dpp_usable$Age==""|dpp_usable$Age=="."|dpp_usable$Sex=="" | dpp_usable$PCR=="bl"),]
+```
+
+### Proceed with BL PCR observations designated as negative
+
+This is the preference Breanna had (3/16/2021).
+
+```{r}
+dpp_BLneg <- dpp_usable
+dpp_BLneg[dpp_BLneg$PCR == "bl",]$PCR <- "negative"
+summary(dpp_BLneg)
+
+## Some plots
+dpp_BLneg$diag_pos <- 1*(dpp_BLneg$PCR=="positive" | dpp_BLneg$DPP=="positive")
+
+tmp <- dpp_BLneg %>%
+  group_by(Sex, Age) %>%
+  summarize(
+    emp_odds_diag_pos = mean(diag_pos==1)/(1-mean(diag_pos==1))
+  )
+```
+
+### Proceed with BL PCR observations designated as positive
+
+We are going to run the models both ways to see how sensitive results are to this choice.
+
+```{r}
+dpp_BLpos <- dpp_usable
+dpp_BLpos[dpp_BLpos$PCR == "bl",]$PCR <- "positive"
+summary(dpp_BLpos)
+
+## Some plots
+dpp_BLpos$diag_pos <- 1*(dpp_BLpos$PCR=="positive" | dpp_BLpos$DPP=="positive")
+
+tmp <- dpp_BLpos %>%
+  group_by(Sex, Age) %>%
+  summarize(
+    emp_odds_diag_pos = mean(diag_pos==1)/(1-mean(diag_pos==1))
+  )
+```
+
+## Other summary plots
+
+```{r}
+
+ggplot(tmp, aes(x=as.numeric(Age), y=emp_odds_diag_pos, color=Sex)) + 
+  geom_point() + 
+  theme_bw()
+
+ggplot(dpp_usable, aes(x=as.numeric(Age), y=DPP_reader, color=Sex)) + 
+  geom_point() + 
+  theme_bw()
+
+ggplot(dpp_usable, aes(x=DPP_reader, color=Sex)) + 
+  geom_density(size=1) + 
+  theme_bw()
+
+dpp_usable <- dpp_usable %>%
+  mutate(
+    log_DPP_reader = log(DPP_reader + 0.1)
+  )
+
+ggplot(dpp_usable, aes(x=log_DPP_reader, color=Sex)) + 
+  geom_density(size=1) + 
+  theme_bw()
+
+dpp_usable %>% group_by(Sex) %>%
+  summarize(
+    mean_log_DPP_reader = mean(log_DPP_reader),
+    sd_log_DPP_reader = sd(log_DPP_reader)
+  )
+
+ggplot(dpp_usable, aes(x=as.numeric(Age), y=log_DPP_reader, color=Sex)) + 
+  geom_point() + 
+  theme_bw() + 
+  geom_smooth(method="lm")
+
+```
+
+
+
+# Model 1: Dichotomized DPP and PCR
+
+## MCMC via OpenBUGS (no transformation)
+
+```{r Open Bugs Model ContDPP setup}
+## ranges of sensitivities and specificities
+sens.pcr.range <- c(0.839, 0.990)
+sens.dpp.range <- c(0.832, 0.930)
+spec.pcr.range <- c(0.871, 0.970)
+spec.dpp.range <- c(0.682, 0.951)
+
+## ranges of sensitivities and specificities
+sens.pcr <- mean(sens.pcr.range) #0.999
+sens.dpp <- mean(sens.dpp.range) #0.001
+spec.pcr <- mean(spec.pcr.range) #0.999
+spec.dpp <- mean(spec.dpp.range) #0.001
+
+## range of prevalence for visceral leishmaniasis
+prev.range <- c(0.05, 0.10)
+prev <- mean(prev.range)
+```
+
+## Implementation: Dichotomized Tests
+
+### BL PCR designated as negative
+
+```{r Open Bugs Model 1a, include=FALSE, message=FALSE}
+## Specify data
+y.pcr <- 1*(dpp_BLneg$PCR_positive=="positive")
+y.dpp <- 1*(dpp_BLneg$DPP_positive=="positive")
+  
+nind <- nrow(dpp_BLneg)
+  
+Sex2 <- 1*(dpp_BLneg$Sex=="M")
+# Age <- as.numeric(dpp_BLneg$Age)-mean(as.numeric(dpp_BLneg$Age))
+Age <- as.numeric(dpp_BLneg$Age)-3 ## most common age in sample
+S.a <- sens.pcr/(1-sens.pcr)
+Sp.a <- spec.pcr/(1-spec.pcr)
+S.a_dpp <- sens.dpp/(1-sens.dpp)
+Sp.a_dpp <- spec.dpp/(1-spec.dpp)
+  
+data <- list(nind=nind,
+             y.pcr=y.pcr,
+             y.dpp=y.dpp,
+             Sex=Sex2,
+             Age=Age,
+             S.a=S.a,
+             Sp.a=Sp.a,
+             S.a_dpp=S.a_dpp, ## function of mean sensitivity for DPP
+             Sp.a_dpp=Sp.a_dpp ## function of mean specificity for DPP
+             )
+  
+## Initialize all prior values
+inits <- function(){
+    list(S.pcr=rbeta(1,S.a,1),
+         Sp.pcr=rbeta(1,Sp.a,1),
+         S.dpp=rbeta(1,S.a_dpp,1),
+         Sp.dpp=rbeta(1,Sp.a_dpp,1),
+         B0=rnorm(0,1),
+         B1=rnorm(0,1),
+         B2=rnorm(0,1),
+         B3=rnorm(0,1),
+         eps=rnorm(nind,0,5000))
+}
+ 
+## --- No hierarchical centering --- ## 
+## Start MCMC simulation
+sens_spec.sim_m1_BLneg <- bugs(data=data, 
+                          inits=inits, 
+                          model.file="Model1b_separate_tests_GB.txt",
+                          parameters=c("B0",
+                                       "B1",
+                                       "B2",
+                                       # "B3",
+                                       "S.pcr",
+                                       "Sp.pcr",
+                                       "S.dpp",
+                                       "Sp.dpp",
+                                       "pi.D",
+                                       "eps"),
+                          n.chains=3, n.iter=40000, n.burnin=20000, 
+                          codaPkg=TRUE, debug=TRUE)
+
+## Use coda to read things back into R
+codaobject_m1_BLneg <- read.bugs(sens_spec.sim_m1_BLneg)
+model1_BLneg_df <- do.call(rbind.data.frame, codaobject_m1_BLneg)
+
+save(model1_BLneg_df, file="C:/Users/mozanne/Documents/Research/DPP_LCA/Models/Model Fits/model1_BLneg_post_prec1.Rdata")
+```
